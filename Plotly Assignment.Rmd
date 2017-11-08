@@ -1,0 +1,272 @@
+---
+title: "Health Impacts and Economic Costs of Disaster Events in the US"
+author: "Jacob Schwartz"
+date: "September 15, 2017"
+output: 
+  ioslides_presentation: 
+    keep_md: yes
+    widescreen: yes
+---
+<style type="text/css">
+body,td{font-size: 14px;}
+code.r{font-size: 10px; line-height: 1.5; columns: 2; -webkit-columns: 2; -moz-columns: 2}
+pre{font-size: 10px; line-height: 1.5; columns: 2; -webkit-columns: 2; -moz-columns: 2}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r libraries, results="hide", message=FALSE, warning=FALSE}
+library(plyr)
+library(dplyr)
+library(reshape2)
+library(ggplot2)
+library(gridExtra)
+library(plotly)
+```
+
+##Overview
+
+This project is an exploration of the U.S. National Oceanic and Atmospheric Administration's (NOAA) storm database. This database tracks characteristics of major storms and weather events in the United States, including when and where they occur, as well as estimates of any fatalities, injuries, and property or crop damage. NOAA has maintained this database of storm events since 1950. 
+
+##Questions
+**This analysis will investigate the costs and human impact of these disaster events. We endeavor to answer the questions:**
+
+**1. Across the United States, which types of events are most harmful with respect to population health?**
+
+**2. Across the United States, which types of events have the greatest economic consequences?**
+
+##Additional Info
+Although the data goes as far back as 1950, it wasn't until 1996 that NOAA created a list of 48 standardized event types. Events prior to 1996 were classed into fewer types, and even after 1996 many reports of storm events do not stick to the official list of events. For the purposes of this analysis, we observe the data both in total and with the data post 1995 separated out, and determine which, if either, is more suited to answer our questions.
+
+The method used to clean and sort the data from NOAA can be found [here](http://rpubs.com/schwarja209/ReproducibleResearch_Assign2).
+
+```{r cleaning, comment="", cache=TRUE}
+download.file("https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2","StormData.csv.bz2")
+StormData_RAW<-read.csv("StormData.csv.bz2") #download and load data
+StormData<-StormData_RAW #store RAW data for reference
+
+######################
+# Cleaning Event Types
+######################
+EVTYPE_official<-c("astronomicallowtide","avalanche","blizzard","coastalflood","coldwindchill", #load official EVTYPE list
+                   "debrisflow","densefog","densesmoke","drought","dustdevil","duststorm",   #for comparison
+                   "excessiveheat","extremecoldwindchill","flashflood","flood","freezingfog",
+                   "frostfreeze","funnelcloud","hail","heat","heavyrain","heavysnow","highsurf",
+                   "highwind","hurricanetyphoon","icestorm","lakeeffectsnow","lakeshoreflood",
+                   "lightning","marinehail","marinehighwind","marinestrongwind","marinethunderstormwind",
+                   "ripcurrent","seiche","sleet","stormsurgetide","strongwind","thunderstormwind",
+                   "tornado","tropicaldepression","tropicalstorm","tsunami","volcanicash",
+                   "waterspout","wildfire","winterstorm","winterweather")
+
+StormData$EVTYPE<-tolower(StormData$EVTYPE) #make EVTYPE lowercase to narrow down options
+StormData$EVTYPE<-gsub("[^A-Za-z]","",StormData$EVTYPE) #remove all non alphabetic characters to narrow further
+for(i in 1:length(EVTYPE_official)){ #sub in official EVTYPE for all EVTYPES that are similar
+    StormData$EVTYPE<-gsub(paste0(EVTYPE_official[i],".*"),paste0(EVTYPE_official[i]),StormData$EVTYPE)
+}
+
+#use data documentation to fit top unofficialEVTYPES (and other similar ones) into official categories
+StormData$EVTYPE<-gsub("marinetstm.*","marinethunderstormwind",StormData$EVTYPE)
+StormData$EVTYPE<-gsub("tstm.*|thunder.*","thunderstormwind",StormData$EVTYPE)
+StormData$EVTYPE<-gsub("urban.*|riverflood.*","flood",StormData$EVTYPE)
+StormData$EVTYPE<-gsub("wild.*","wildfire",StormData$EVTYPE) #where we'd cut off with 1000 threshold 
+StormData$EVTYPE<-gsub("extremecold$|extremewindchill.*|extendedcold.*","extremecoldwindchill",StormData$EVTYPE)
+StormData$EVTYPE<-gsub("^snow.*","heavysnow",StormData$EVTYPE)
+StormData$EVTYPE<-gsub("landslide.*|landslump.*","debrisflow",StormData$EVTYPE)
+StormData$EVTYPE<-gsub("^fog.*","densefog",StormData$EVTYPE)
+StormData$EVTYPE<-gsub("^wind.*","strongwind",StormData$EVTYPE)
+StormData$EVTYPE<-gsub("stormsurge.*","stormsurgetide",StormData$EVTYPE)
+StormData$EVTYPE<-gsub("freezingrain.*","sleet",StormData$EVTYPE)
+StormData$EVTYPE<-gsub("heavysurf.*|.*hightide.*","highsurf",StormData$EVTYPE)
+StormData$EVTYPE<-gsub("^drymicroburst.*","highwind",StormData$EVTYPE)
+StormData$EVTYPE<-gsub("lightsnow.*|moderatesnow.*|wintrymix.*","winterstorm",StormData$EVTYPE)
+StormData$EVTYPE<-gsub("^hurricane.*|^typhoon.*","hurricanetyphoon",StormData$EVTYPE)
+StormData$EVTYPE<-gsub("recordw.*|recordh.*","excessiveheat",StormData$EVTYPE)
+StormData$EVTYPE<-gsub("unseasonablyw.*|unseasonablyh.*|unusuallyw.*","heat",StormData$EVTYPE)
+
+###################################
+# Cleaning Property and Crop Damage
+###################################
+EXP<-function(x){ #create a function to translate PROPDMGEXP and CROPDMGEXP into usable integers
+    if(x %in% 0:9) return(as.numeric(paste0("1e",x)))
+    else if(x=="h"|x=="H") return(1e2) 
+    else if(x=="k"|x=="K") return(1e3)
+    else if(x=="m"|x=="M") return(1e6)
+    else if(x=="b"|x=="B") return(1e9)
+    else return(1)
+}
+StormData<-mutate(StormData,PROPDMGEXP=as.numeric(sapply(PROPDMGEXP,FUN=EXP)))%>%
+    mutate(CROPDMGEXP=as.numeric(sapply(CROPDMGEXP,FUN=EXP))) #run all EXP data through the function
+
+################
+# Cleaning Dates
+################
+StormData$BGN_DATE<-as.Date(StormData$BGN_DATE,format="%m/%d/%Y") #convert dates to date format
+StormData$END_DATE<-as.Date(StormData$END_DATE,format="%m/%d/%Y")
+
+################
+# Narrowing Data
+################
+StormData_Complete<-filter(StormData,EVTYPE %in% EVTYPE_official)%>% #narrow data to only official EVTYPES
+    mutate(EVTYPE=as.factor(EVTYPE),PROPDMG=PROPDMG*PROPDMGEXP,CROPDMG=CROPDMG*CROPDMGEXP)%>% #condense damage costs
+    select(STATE,EVTYPE,BGN_DATE,FATALITIES,INJURIES,PROPDMG,CROPDMG)%>% #narrow variables of interest
+    group_by(EVTYPE) #set factors for later summarization
+
+StormData_Modern<-filter(StormData_Complete,BGN_DATE>="1996-01-01")%>% #create separate data set
+    group_by(EVTYPE)                                                   #for just post 1995 data
+```
+
+```{r summaries, comment="", cache=TRUE}
+##################
+# Summarizing Data
+##################
+StormData_Fatalities_Avg<-summarize(StormData_Complete,FATALITIES=mean(FATALITIES))%>%
+    arrange(desc(FATALITIES)) #get average fatalities
+StormData_Injuries_Avg<-summarize(StormData_Complete,INJURIES=mean(INJURIES))%>%
+    arrange(desc(INJURIES)) #get average injuries
+StormData_PropDMG_Avg<-summarize(StormData_Complete,PROPDMG=mean(PROPDMG))%>%
+    arrange(desc(PROPDMG)) #get average property damage
+StormData_CropDMG_Avg<-summarize(StormData_Complete,CROPDMG=mean(CROPDMG))%>%
+    arrange(desc(CROPDMG)) #get average crop damage
+
+# use modern data set for totals, so it's a fair comparison
+StormData_Fatalities_Tot<-summarize(StormData_Modern,FATALITIES=sum(FATALITIES))%>%
+    arrange(desc(FATALITIES)) #get total fatalities
+StormData_Injuries_Tot<-summarize(StormData_Modern,INJURIES=sum(INJURIES))%>%
+    arrange(desc(INJURIES)) #get total injuries
+StormData_PropDMG_Tot<-summarize(StormData_Modern,PROPDMG=sum(PROPDMG))%>%
+    arrange(desc(PROPDMG)) #get total property damage
+StormData_CropDMG_Tot<-summarize(StormData_Modern,CROPDMG=sum(CROPDMG))%>%
+    arrange(desc(CROPDMG)) #get total crop damage
+```
+
+```{r summary1, comment="", cache=TRUE}
+##print(head(StormData_Fatalities_Avg,5)) #take a look at the summary results
+##print(head(StormData_Fatalities_Tot,5)) 
+```
+
+```{r summary2, comment="", cache=TRUE}
+##print(head(StormData_Injuries_Avg,5)) #similar distributions of effects for fatalities and injuries
+##print(head(StormData_Injuries_Tot,5))
+```
+
+```{r summary3, comment="", cache=TRUE}
+##print(head(StormData_PropDMG_Avg,5))
+##print(head(StormData_PropDMG_Tot,5))
+```
+
+```{r summary4, comment="", cache=TRUE}
+##print(head(StormData_CropDMG_Avg,5)) #more prop dmg from droughts, more prop dmg from storm surges
+##print(head(StormData_CropDMG_Tot,5))
+```
+
+```{r sorting, comment="", message=FALSE, warning=FALSE, cache=TRUE}
+# Note: the difference in averages is much more extreme than the difference in totals
+HumanImpact_Avg<-mutate(StormData_Complete,HealthImpacts=FATALITIES+INJURIES)%>% #condense summaries for emphasis
+    summarize(HealthImpacts=mean(HealthImpacts))%>%rename(Disaster_Type=EVTYPE)%>% #make variable nicer for graph
+    arrange(desc(HealthImpacts))
+HumanImpact_Tot<-merge(StormData_Fatalities_Tot,StormData_Injuries_Tot,all=TRUE)%>%
+    mutate(HealthImpacts=FATALITIES+INJURIES)%>%rename(Fatalitities=FATALITIES,Injuries=INJURIES)%>%
+    arrange(desc(HealthImpacts))
+EconomicCost_Avg<-mutate(StormData_Complete,TotalCost=PROPDMG+CROPDMG)%>%
+    summarize(TotalCost=mean(TotalCost)/1000000000)%>%rename(Disaster_Type=EVTYPE)%>% #divide cost by a billion for scaling
+    arrange(desc(TotalCost))
+EconomicCost_Tot<-merge(StormData_PropDMG_Tot,StormData_CropDMG_Tot,all=TRUE)%>%
+    mutate(TotalCost=(PROPDMG+CROPDMG)/1000000000,PROPDMG=PROPDMG/1000000000,CROPDMG=CROPDMG/1000000000)%>%
+    rename(Property=PROPDMG,Crop=CROPDMG)%>%arrange(desc(TotalCost))
+
+# What is a representative slice of each category?
+EconomicCost_Avg<-mutate(StormData_Complete,TotalCost=PROPDMG+CROPDMG)%>% #use log10 instead for avg costs, due to extreme range
+    summarize(TotalCost=log10(mean(TotalCost)))%>%rename(Disaster_Type=EVTYPE)%>%
+    arrange(desc(TotalCost))
+
+HumanImpactTot_Molten<-melt(HumanImpact_Tot[1:20,])%>%arrange(variable,desc(value)) #make type of impact/cost a factor
+HumanImpactTot_Molten<-HumanImpactTot_Molten[1:40,]%>%rename(Types_of_Impact=variable)%>%droplevels() #remove total damage
+EconomicCostTot_Molten<-melt(EconomicCost_Tot[1:10,])%>%arrange(variable,desc(value))
+EconomicCostTot_Molten<-EconomicCostTot_Molten[1:20,]%>%rename(Types_of_Damage=variable)%>%droplevels()
+```
+
+##Average Impact/Cost
+
+Our first approach was to look at the average human impacts (from fatalities and injuries combined) and average economic costs (from both property and crop damage). This approach is shown in the graphs on slide 7.
+
+- The first graph clearly shows that, on average, **tsunamis** are the most harmful disaster events, with respect to population health. However, the next three most harmful disasters (which all have fairly similar effects on average) are **hurricanes**, **excessive heat** and just **heat**. So one could say that heat in general is collectively more harmful to population health than even tsunamis.
+
+##Average Impact/Cost cont.
+
+- The second graph is slightly less clear, as it is a scaled graph of log10(cost). With this in mind, however, it quickly becomes evident that, on average, **hurricanes** have costs that are literal orders of magnitude higher than other disaster events. That being said, **storm surges** are not too too far behind. One thing to note, though, is that storm surges generally accompany hurricanes. So in reality the top two disasters on this graph are essentially one and the same, and their economic consequences are simply amplified further.
+
+##Average Impact/Cost Graphed
+
+```{r graph1, comment="", fig.width=8.5, fig.height=5, cache=TRUE}
+##########
+# Graphing
+##########
+p1<-plot_ly(data=droplevels(HumanImpact_Avg[1:20,]),x=~Disaster_Type,y=~HealthImpacts,type="bar",
+            color=I("forestgreen"),name=~"Health Impacts")%>%
+    layout(margin=list(b=110),xaxis=list(autotick=FALSE),
+           yaxis=list(title="Top 20 Natural Disasters by Avg Health Impact"))
+
+p2<-plot_ly(data=droplevels(EconomicCost_Avg[1:10,]),x=~Disaster_Type,y=~TotalCost,type="bar",
+            color=I("firebrick1"),name=~"log10(Cost ($))")%>%
+    layout(margin=list(b=110),yaxis=list(title="Top 10 Natural Disasters by Avg Economic Cost"))
+
+pp<-subplot(p1,p2,titleY=TRUE,margin=0.05)#print first set of graphs together
+pp
+```
+
+##Absolute Impact/Cost
+
+Our second approach was to look at the total human impacts (from fatalities and injuries) and total economic costs (from property and crop damage). This approach is shown in the graphs on slides 9 and 11 respectively.
+
+- In terms of population health, **tornados** have clearly caused by far the most harm. However, from the stacked figure, it appears that **excessive heat** has actually caused slightly more fatalities. Also of note is the fact that, here, tsunamis aren't even on the list, in contrast to the average impact. This is likely due to tsunamis being a rare occurence in the US, as opposed to tornados which happen quite frequently.
+
+##Absolute Human Impact
+
+```{r graph2, comment="", warning=FALSE, fig.width=8.5, fig.height=5, cache=TRUE}
+p3<-plot_ly(data=HumanImpactTot_Molten,x=~EVTYPE,y=~value,type="bar",color=~Types_of_Impact)%>%
+    layout(barmode="stack",margin=list(b=80),xaxis=list(title=""),yaxis=list(title="Count of Impacts"),
+           title="Top 20 Natural Disasters in US by Total Human Impact since 1996")
+
+p3 #print second set of graphs separately
+```
+
+##Absolute Impact/Cost cont.
+
+- As for economic consequences, this time **floods** cost the US the most by a long shot (the y axis is in terms of billions of dollars). In this case, though, **hurricanes** (which had the highest average costs) do at least come in second, at about half the total cost of floods. This is again likely do to the frequency of floods versus hurricanes. One other very notable item is that **draughts** are far an away the most costly disasters in terms of crop damage, as can be seen from the stacked bar on the left in the following graph. In fact, while property damage is clearly quite a bit more costly than crop damage generally, the amount of crop damage caused by draughts makes it chart at high property damage levels.
+
+##Absolute Property Cost
+
+```{r graph3, comment="", warning=FALSE, fig.width=8.5, fig.height=5, cache=TRUE}
+p4<-plot_ly(data=EconomicCostTot_Molten,x=~EVTYPE,y=~value,type="bar",color=~Types_of_Damage)%>%
+    layout(barmode="stack",margin=list(b=80),xaxis=list(title=""),yaxis=list(title="Cost (billion $)"),
+           title="Top 10 Natural Disasters in US by Total Economic Cost since 1996")
+
+p4
+```
+
+##Overall Assessment
+
+**Overall, we can probably state that excessive heat is the most dangerous disaster for population health, as it's present in the top 3 for *both* the average and the absolute approaches. Similarly we can safely say that hurricanes have the greatest economic consequences from a general standpoint.**
+
+##Additional Notes
+
+It would not be wise to put too much weight on this analysis. Though we captured more than 99% of the values recorded, it is still limited in many ways.
+
+- For one thing, the recording of event types is extremely imprecise, and therefore some of our re-working of the `EVTYPE` data may have been faulty (details [here](http://rpubs.com/schwarja209/ReproducibleResearch_Assign2)). And considering the level of disarray of this variable, there are no doubt many other errors that we didn't see in this brief exercise. The improper coding of even just one crop or property damage exponent from a K or M to a B would throw out the entire analysis. Additionally, it is possible that one of the very few event types we ignored was a single record with *huge* human or economic impacts. Such an occurence could severely skew our results.
+
+##Additional Notes cont.
+
+- Another thing that would be worth considering is inflation adjusted figures in the economic analysis. Or we could observe the data year by year, to see the effects of climate change on natural disasters over time.
+
+- Speaking of climate, it could be more useful to look at the results on a region by region or state by state basis, since the types of events in any particular region are heavily influenced by geography. The original storm dataset from NOAA has many additional variables to help with this kind of mapping.
+
+Suffice it to say that while we can draw broad conclusions from our analysis, this is only a first step in really answering our core questions about natural disasters in the United State.
+
+##Appendix
+
+This analysis and these graphs were created on a computer with the following system running:
+```{r appendix, comment=""}
+sessionInfo()
+```
